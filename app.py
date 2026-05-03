@@ -4,52 +4,30 @@ import pandas as pd
 import io
 import pytesseract
 import re
-import fitz  # PyMuPDF: Reemplaza a pdf2image para evitar el error de Poppler
+import fitz  # PyMuPDF
 from PIL import Image
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 
 # ============================================================
-# CONFIGURACIÓN Y ESTILO UI PREMIUM (GLASSMORPHISM)
+# CONFIGURACIÓN Y ESTILO UI ESTABLE
 # ============================================================
 st.set_page_config(page_title="INVIMA Data Engine", layout="wide", page_icon="🏛️")
 
+# Estilo simplificado para evitar errores de renderizado en el navegador
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    
-    .stApp { background: radial-gradient(circle at top left, #fdfbfb, #ebedee); }
-
-    .file-card {
-        background: white;
-        padding: 2rem;
-        border-radius: 12px;
-        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
-        border: 1px solid #e2e8f0;
-        margin-bottom: 1.5rem;
-    }
-
     .main-title {
         color: #1a365d;
         font-weight: 800;
         text-align: center;
         font-size: 2.5rem;
-        margin-bottom: 1rem;
+        margin-bottom: 2rem;
     }
-
     .stButton>button {
         width: 100%;
-        border-radius: 8px;
-        background-color: #2b6cb0;
-        color: white;
         font-weight: 600;
-        border: none;
-        padding: 0.6rem;
     }
-    .stButton>button:hover { background-color: #2c5282; border: none; color: white; }
-
-    [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #e2e8f0; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -58,29 +36,27 @@ st.markdown("""
 # ============================================================
 
 def extraer_con_ocr(file):
-    """Convierte PDF a imagen usando PyMuPDF y usa Tesseract para tabular."""
+    """Convierte PDF a imagen usando PyMuPDF y aplica OCR con Tesseract."""
     filas = []
     file.seek(0)
     pdf_bytes = file.read()
     
-    # Abrimos el PDF desde los bytes con PyMuPDF (fitz)
+    # Abrir PDF desde memoria
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     
     for page in doc:
-        # Renderizamos la página a una imagen (pixmap)
-        # 300 DPI equivale a una matriz de zoom de 4.166 (300/72)
+        # Alta resolución para OCR (300 DPI)
         zoom = 300 / 72
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat)
         
-        # Convertimos el pixmap a una imagen PIL para Tesseract
         img = Image.open(io.BytesIO(pix.tobytes("png")))
         
-        # Usamos Tesseract para buscar tablas (--psm 6)
+        # OCR optimizado para tablas
         text = pytesseract.image_to_string(img, lang='spa', config='--psm 6')
         
         for line in text.split('\n'):
-            # Detectamos separaciones grandes de espacios para simular columnas
+            # Dividir por múltiples espacios para detectar columnas
             partes = [p.strip() for p in re.split(r'\t| {2,}', line) if p.strip()]
             if len(partes) > 1:
                 filas.append(partes)
@@ -97,7 +73,7 @@ def extraer_con_limpieza(file, modo_ocr=False):
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                # Intentamos con estructura de líneas
+                # Estrategia de líneas para INVIMA
                 table = page.extract_table({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
                 if not table:
                     table = page.extract_table()
@@ -107,28 +83,28 @@ def extraer_con_limpieza(file, modo_ocr=False):
                         clean_row = [" ".join(str(c).split()) if c else "" for c in row]
                         if any(clean_row): filas.append(clean_row)
     except:
-        return extraer_con_ocr(file) # Fallback automático
+        return extraer_con_ocr(file)
     
-    # Si pdfplumber no encontró nada, intentamos OCR
     if not filas:
         return extraer_con_ocr(file)
         
     return filas
 
 # ============================================================
-# LÓGICA DE EXPORTACIÓN (FORMATO PROFESIONAL)
+# LÓGICA DE EXPORTACIÓN EXCEL
 # ============================================================
 
 def generar_excel_profesional(final_data):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for name, df in final_data.items():
-            sheet_name = name[:30]
+            # Limitar nombre de pestaña a 30 caracteres
+            sheet_name = name[:30].replace("[", "").replace("]", "").replace("*", "").replace("?", "").replace("/", "").replace("\\", "")
             df.to_excel(writer, index=False, sheet_name=sheet_name)
             
             ws = writer.sheets[sheet_name]
             azul_invima = PatternFill(start_color="002F6C", end_color="002F6C", fill_type="solid")
-            fuente_blanca = Font(color="FFFFFF", bold=True, size=11)
+            fuente_blanca = Font(color="FFFFFF", bold=True)
             
             ws.sheet_view.showGridLines = False
             
@@ -136,73 +112,76 @@ def generar_excel_profesional(final_data):
                 cell = ws.cell(row=1, column=col_num)
                 cell.fill = azul_invima
                 cell.font = fuente_blanca
-                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.alignment = Alignment(horizontal="center")
                 
-                # Auto-ajuste de columnas con seguridad
-                try:
-                    max_val = df[value].astype(str).map(len).max()
-                    max_length = max(max_val, len(str(value))) + 2
-                except:
-                    max_length = 20
-                ws.column_dimensions[get_column_letter(col_num)].width = min(max_length, 50)
+                # Ajuste automático de ancho
+                ws.column_dimensions[get_column_letter(col_num)].width = 25
 
     return output.getvalue()
 
 # ============================================================
-# INTERFAZ DE USUARIO
+# INTERFAZ DE USUARIO (SIN HTML CONFLICTIVO)
 # ============================================================
 
 st.markdown("<h1 class='main-title'>🏛️ INVIMA DATA ENGINE</h1>", unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("### 🛠️ Configuración")
-    modo_scan = st.toggle("🔦 Activar Motor OCR", help="Activa esto si el PDF es un escaneo de baja calidad.")
-    if st.button("🔄 Limpiar Sesión"):
+    st.header("🛠️ Configuración")
+    modo_scan = st.toggle("🔦 Activar Motor OCR", help="Activa esto para documentos escaneados.")
+    if st.button("🔄 Reiniciar Aplicación"):
         st.session_state.clear()
         st.rerun()
+
+# Inicializar estado
+if 'master' not in st.session_state:
+    st.session_state.master = {}
 
 uploaded_files = st.file_uploader("Cargar Reportes PDF", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
-    if 'master' not in st.session_state: st.session_state.master = {}
-
     for i, f in enumerate(uploaded_files):
-        with st.container():
-            st.markdown('<div class="file-card">', unsafe_allow_html=True)
-            c1, c2 = st.columns([4, 1])
-            c1.markdown(f"**Archivo:** `{f.name}`")
+        # Contenedor nativo con borde, mucho más estable que HTML manual
+        with st.container(border=True):
+            col_info, col_btn = st.columns([3, 1])
+            col_info.subheader(f"📄 {f.name}")
             
-            if c2.button("Analizar", key=f"btn_{i}"):
-                with st.spinner("Extrayendo información..."):
+            if col_btn.button("Analizar PDF", key=f"btn_{i}"):
+                with st.spinner("Analizando estructura..."):
                     datos = extraer_con_limpieza(f, modo_scan)
                     if datos:
                         st.session_state.master[f.name] = {"df": pd.DataFrame(datos), "clean": None}
                     else:
-                        st.error("No se pudo leer el contenido.")
+                        st.error("No se detectaron tablas.")
 
+            # Si ya fue analizado, mostrar previsualización
             if f.name in st.session_state.master:
                 res = st.session_state.master[f.name]
                 df_raw = res["df"]
                 
-                h_idx = st.number_input("Selecciona fila de encabezados:", 0, max(0, len(df_raw)-1), 0, key=f"h_{i}")
-                st.dataframe(df_raw.head(8), use_container_width=True)
+                st.write("---")
+                h_idx = st.number_input(f"Fila de encabezados para {f.name}:", 0, max(0, len(df_raw)-1), 0, key=f"h_{i}")
+                st.dataframe(df_raw.head(10), use_container_width=True)
                 
-                if st.button("💎 Generar Estructura Limpia", key=f"fix_{i}"):
-                    df_final = df_raw.iloc[h_idx:].copy()
-                    df_final.columns = [str(c).strip() for c in df_final.iloc[0]]
-                    df_final = df_final[1:].reset_index(drop=True)
-                    st.session_state.master[f.name]["clean"] = df_final
-                    st.success("Tabla lista para exportar.")
+                if st.button("💎 Validar y Limpiar Tabla", key=f"fix_{i}"):
+                    try:
+                        df_final = df_raw.iloc[h_idx:].copy()
+                        df_final.columns = [str(c).strip() for c in df_final.iloc[0]]
+                        df_final = df_final[1:].reset_index(drop=True)
+                        st.session_state.master[f.name]["clean"] = df_final
+                        st.success(f"✅ {f.name} listo para exportar.")
+                    except Exception as e:
+                        st.error(f"Error al limpiar: {e}")
 
-            st.markdown('</div>', unsafe_allow_html=True)
-
+    # Sección de Descarga
     ready_data = {k: v["clean"] for k, v in st.session_state.master.items() if v.get("clean") is not None}
+    
     if ready_data:
+        st.markdown("### 🚀 Procesamiento Completo")
         excel_file = generar_excel_profesional(ready_data)
         st.download_button(
-            label="🚀 DESCARGAR EXCEL CON FORMATO CORPORATIVO",
+            label="📥 DESCARGAR TODOS LOS ARCHIVOS EN EXCEL",
             data=excel_file,
-            file_name="REPORTE_FINAL_INVIMA.xlsx",
+            file_name="CONSOLIDADO_INVIMA.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
